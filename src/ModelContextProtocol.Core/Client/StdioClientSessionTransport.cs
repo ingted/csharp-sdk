@@ -148,8 +148,15 @@ internal sealed class StdioClientSessionTransport : StreamClientSessionTransport
         try
         {
 #if NET
-            using var timeoutCts = new CancellationTokenSource(_options.ShutdownTimeout);
-            await _process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+            // Process.WaitForExitAsync(CancellationToken) can leave callers stuck on
+            // shutdown when the child keeps stdio resources alive. Use an explicit
+            // race so cleanup always reaches the kill-tree fallback.
+            var waitTask = _process.WaitForExitAsync();
+            var timeoutTask = Task.Delay(_options.ShutdownTimeout);
+            if (await Task.WhenAny(waitTask, timeoutTask).ConfigureAwait(false) == waitTask)
+            {
+                await waitTask.ConfigureAwait(false);
+            }
 #else
             if (_process.WaitForExit((int)_options.ShutdownTimeout.TotalMilliseconds))
             {
